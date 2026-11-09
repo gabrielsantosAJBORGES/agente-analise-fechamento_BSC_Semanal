@@ -1,0 +1,50 @@
+name: Fechamento Semanal Looker Studio -> Z-API
+
+on:
+  # Executa automaticamente toda segunda-feira às 08:00 da manhã (horário de Brasília = 11:00 UTC)
+  schedule:
+    - cron: '0 11 * * 1'
+  # Permite disparar manualmente a qualquer momento clicando em "Run workflow" na aba Actions do GitHub
+  workflow_dispatch:
+
+jobs:
+  analise-fechamento:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: 🟢 Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 📦 Instalar dependências do projeto
+        run: npm ci || npm install
+
+      - name: 🌐 Instalar navegador Chromium do Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: 🚀 Executar Agente de Fechamento Semanal e enviar via Z-API
+        env:
+          CI: 'true'
+          TZ: 'America/Sao_Paulo'
+          GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.GOOGLE_STORAGE_STATE_BASE64 }}
+          ZAPI_INSTANCE_ID: ${{ secrets.ZAPI_INSTANCE_ID }}
+          ZAPI_TOKEN: ${{ secrets.ZAPI_TOKEN }}
+          ZAPI_CLIENT_TOKEN: ${{ secrets.ZAPI_CLIENT_TOKEN }}
+          ZAPI_TARGET_PHONE: ${{ secrets.ZAPI_TARGET_PHONE }}
+        run: npm run analyze
+
+      - name: 📁 Salvar relatório gerado nos artefatos da execução
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-fechamento-semanal
+          path: |
+            relatorios/
+            dados/*.png
+          retention-days: 30

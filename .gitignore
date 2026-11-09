@@ -1,0 +1,7 @@
+node_modules/
+.chrome-profile/
+dados/
+relatorios/
+.env
+storageState.json
+session_base64.txt
