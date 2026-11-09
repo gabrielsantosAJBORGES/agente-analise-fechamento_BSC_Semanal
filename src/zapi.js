@@ -12,7 +12,7 @@ export async function sendZApiMessage(messageText) {
   const token = process.env.ZAPI_TOKEN;
   const clientToken = process.env.ZAPI_CLIENT_TOKEN;
   const targetGroupsRaw = process.env.ZAPI_GROUP_ID || process.env.ZAPI_TARGET_PHONE;
-  const targetGroupName = process.env.ZAPI_GROUP_NAME;
+  const targetGroupName = process.env.ZAPI_GROUP_NAME || 'Operação sem Falhas';
 
   if (!instanceId || !token || instanceId.includes('SEU_INSTANCE_ID')) {
     console.log('\nℹ️ [Z-API] Variáveis ZAPI_INSTANCE_ID ou ZAPI_TOKEN não configuradas.');
@@ -97,8 +97,9 @@ export async function listZApiGroups(instanceId, token, headers) {
 
 async function findGroupIdByName(instanceId, token, headers, groupName) {
   const groups = await listZApiGroups(instanceId, token, headers);
-  const search = groupName.toLowerCase().trim();
-  const match = groups.find(g => (g.name || '').toLowerCase().includes(search));
+  const normalize = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const search = normalize(groupName);
+  const match = groups.find(g => normalize(g.name).includes(search));
   if (match) {
     console.log(`✅ [Z-API] Grupo encontrado: "${match.name}" -> ID: ${match.phone}`);
     return match.phone;
