@@ -1,13 +1,14 @@
 {
   "name": "agente-analise-fechamento",
   "version": "1.0.0",
-  "description": "Agente para extração e análise comparativa semanal do Looker Studio com envio via Z-API",
+  "description": "Agente para extração e análise comparativa semanal do Looker Studio com envio para Grupo via Z-API",
   "type": "module",
   "scripts": {
     "login": "node src/login.js",
     "inspect": "node src/inspect.js",
     "analyze": "node src/analyze.js",
-    "export-session": "node src/export-session.js"
+    "export-session": "node src/export-session.js",
+    "list-groups": "node src/list-groups.js"
   },
   "dependencies": {
     "playwright": "^1.48.0"
