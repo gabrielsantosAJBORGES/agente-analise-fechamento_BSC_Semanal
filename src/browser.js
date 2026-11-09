@@ -48,19 +48,28 @@ export async function launchBrowser(headless = false) {
 
   const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
   const base64State = process.env.GOOGLE_STORAGE_STATE_BASE64;
+  const hasStorageStateFile = fs.existsSync(STORAGE_STATE_PATH);
 
-  if (isCI || base64State) {
+  if (isCI || base64State || hasStorageStateFile) {
     let storageState = undefined;
 
     if (base64State) {
       const jsonStr = Buffer.from(base64State, 'base64').toString('utf-8');
       fs.writeFileSync(STORAGE_STATE_PATH, jsonStr, 'utf-8');
       storageState = STORAGE_STATE_PATH;
-    } else if (fs.existsSync(STORAGE_STATE_PATH)) {
+    } else if (hasStorageStateFile) {
       storageState = STORAGE_STATE_PATH;
     }
 
+    const chromePaths = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+    ];
+    const executablePath = isCI ? undefined : chromePaths.find(p => fs.existsSync(p));
+
     const browser = await chromium.launch({
+      executablePath,
       headless: true,
       args: [
         '--disable-blink-features=AutomationControlled',
