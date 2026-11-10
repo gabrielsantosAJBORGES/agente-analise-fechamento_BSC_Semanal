@@ -1,116 +1,73 @@
-import { launchBrowser, REPORT_URL, DATA_DIR } from './browser.js';
+import { chromium } from 'playwright';
 import path from 'path';
 import fs from 'fs';
+import { USER_DATA_DIR, STORAGE_STATE_PATH } from './browser.js';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const LOGIN_URL = 'https://accounts.google.com/ServiceLogin?hl=pt-BR&continue=https%3A%2F%2Fdatastudio.google.com%2Fu%2F0%2Freporting%2F5122833b-f83e-4786-b6fb-3cb9cd8f84e8%2Fpage%2Fp_o4l5vj4n3d';
 
 async function main() {
   console.log('====================================================');
-  console.log('🔐 INICIANDO NAVEGADOR PARA LOGIN E INSPEÇÃO INICIAL');
+  console.log('🔐 ABRINDO CHROME ISOLADO PARA LOGIN AUTOMÁTICO');
   console.log('====================================================');
-  console.log('1. Uma janela do Chrome será aberta no seu relatório do Looker Studio.');
-  console.log('2. Caso peça login, entre normalmente com seu e-mail e senha do Google.');
-  console.log('3. Assim que o painel carregar os números na tela, aguarde alguns segundos.');
-  console.log('   O agente irá detectar o painel carregado automaticamente e mapear todos os indicadores!\n');
 
-  const context = await launchBrowser(false);
+  // Usa o Chromium do próprio Playwright para NUNCA ser absorvido pelo Chrome já aberto no Windows!
+  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+    headless: false,
+    viewport: { width: 1440, height: 900 },
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--start-maximized',
+      '--no-default-browser-check',
+      '--no-first-run'
+    ],
+    ignoreDefaultArgs: ['--enable-automation']
+  });
+
   const page = context.pages()[0] || await context.newPage();
+  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' });
 
-  await page.goto(REPORT_URL, { waitUntil: 'domcontentloaded' });
+  console.log('⏳ Entre com gabriel.santos@ajborges.com na janela "Chrome for Testing" que acabou de abrir...');
 
-  console.log('⏳ Aguardando você fazer login e o relatório do Looker Studio carregar...');
+  let ready = false;
+  const start = Date.now();
+  while (!ready && Date.now() - start < 5 * 60 * 1000) {
+    await page.waitForTimeout(2500);
+    const url = page.url();
+    if (url.includes('accounts.google.com')) continue;
 
-  // Aguarda até que a URL não seja accounts.google.com e que elementos do Looker Studio apareçam na página
-  let loaded = false;
-  const maxWaitMs = 5 * 60 * 1000; // 5 minutos para login tranquilo
-  const startTime = Date.now();
+    const status = await page.evaluate(() => {
+      const txt = document.body.innerText || '';
+      const hasKpis = txt.includes('PLANNING') && txt.includes('Scheduling');
+      const hasNumbers = /\d+[,.]\d+%/.test(txt);
+      return { hasKpis, hasNumbers };
+    }).catch(() => ({ hasKpis: false, hasNumbers: false }));
 
-  while (!loaded && (Date.now() - startTime) < maxWaitMs) {
-    await page.waitForTimeout(3000);
-    const currentUrl = page.url();
-    if (currentUrl.includes('accounts.google.com')) {
-      continue;
-    }
-
-    // Verifica se componentes do Looker Studio já renderizaram
-    const hasComponents = await page.evaluate(() => {
-      const selectors = [
-        'ng2-reporting-plate',
-        '.canvas-container',
-        'lsembed-report',
-        'ng2-canvas-component',
-        '[class*="scorecard"]',
-        '[class*="table"]',
-        'lego-report'
-      ];
-      return selectors.some(sel => document.querySelectorAll(sel).length > 0);
-    }).catch(() => false);
-
-    if (hasComponents) {
-      console.log('✅ Painel detectado! Aguardando 8 segundos extras para todos os gráficos e números carregarem...');
-      await page.waitForTimeout(8000);
-      loaded = true;
+    if (status.hasKpis && status.hasNumbers) {
+      console.log('✅ Login detectado e números da AJ BORGES carregados!');
+      await page.waitForTimeout(4000);
+      ready = true;
     }
   }
 
-  if (!loaded) {
-    console.error('❌ Tempo esgotado aguardando o carregamento do painel.');
+  if (!ready) {
+    console.error('❌ O login não foi concluído a tempo.');
     await context.close();
     process.exit(1);
   }
 
-  // Tira print da página carregada e mapeia a estrutura DOM dos componentes e filtros
-  const screenshotPath = path.join(DATA_DIR, 'painel_inicial.png');
-  await page.screenshot({ path: screenshotPath, fullPage: true });
-  console.log(`📸 Screenshot salva em: ${screenshotPath}`);
+  const state = await context.storageState({ path: STORAGE_STATE_PATH });
+  const base64Str = Buffer.from(JSON.stringify(state), 'utf-8').toString('base64');
+  fs.writeFileSync(path.join(__dirname, '..', 'session_base64.txt'), base64Str, 'utf-8');
 
-  const inspectionData = await page.evaluate(() => {
-    const cleanText = (el) => (el.innerText || '').trim().replace(/\s+/g, ' ');
-
-    // Busca filtros de data
-    const datePickers = Array.from(document.querySelectorAll(
-      'ng2-date-picker, [class*="date-picker"], [class*="datePicker"], [aria-label*="date" i], [aria-label*="data" i], .md-datepicker-button, button, [role="button"]'
-    )).map(el => ({
-      tag: el.tagName.toLowerCase(),
-      className: el.className,
-      text: cleanText(el),
-      ariaLabel: el.getAttribute('aria-label'),
-      rect: el.getBoundingClientRect()
-    })).filter(item => item.text.length > 0 && item.text.length < 120);
-
-    // Busca todos os componentes visuais do canvas do Looker Studio
-    const components = Array.from(document.querySelectorAll(
-      'ng2-canvas-component, .canvas-component, lego-table, scorecard, [class*="scorecard"], [class*="chart"], [role="grid"], [role="table"]'
-    )).map((el, idx) => ({
-      index: idx,
-      tag: el.tagName.toLowerCase(),
-      className: el.className,
-      text: (el.innerText || '').trim(),
-      rect: el.getBoundingClientRect()
-    })).filter(c => c.text.length > 0);
-
-    // Páginas de navegação se houver
-    const navItems = Array.from(document.querySelectorAll(
-      '[class*="page-nav"], [class*="navigation"], [role="tab"], [role="menuitem"]'
-    )).map(el => cleanText(el)).filter(Boolean);
-
-    return {
-      title: document.title,
-      url: window.location.href,
-      fullBodyText: document.body.innerText,
-      datePickers,
-      components,
-      navItems
-    };
-  });
-
-  const inspectionFile = path.join(DATA_DIR, 'inspecao_painel.json');
-  fs.writeFileSync(inspectionFile, JSON.stringify(inspectionData, null, 2), 'utf-8');
-  console.log(`📄 Dados estruturados do painel salvos em: ${inspectionFile}`);
-  console.log('✅ Sessão salva com sucesso! Fechando navegador...');
-
+  console.log('✅ Sessão persistente salva em .chrome-profile, storageState.json e session_base64.txt!');
   await context.close();
 }
 
 main().catch(err => {
-  console.error('Erro durante login/inspeção:', err);
+  console.error(err);
   process.exit(1);
 });

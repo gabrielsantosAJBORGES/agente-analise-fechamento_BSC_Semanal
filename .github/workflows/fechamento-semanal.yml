@@ -9,7 +9,7 @@ on:
 jobs:
   analise-fechamento:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Baixar codigo do repositorio
@@ -27,10 +27,12 @@ jobs:
       - name: Instalar navegador Chromium do Playwright
         run: npx playwright install --with-deps chromium
 
-      - name: Executar Agente de Fechamento Semanal e enviar no Grupo via Z-API
+      - name: Executar Agente de Fechamento Semanal (4 Paginas) e enviar no Grupo via Z-API
         env:
           CI: 'true'
           TZ: 'America/Sao_Paulo'
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASSWORD: ${{ secrets.GOOGLE_PASSWORD }}
           GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.GOOGLE_STORAGE_STATE_BASE64 }}
           ZAPI_INSTANCE_ID: ${{ secrets.ZAPI_INSTANCE_ID }}
           ZAPI_TOKEN: ${{ secrets.ZAPI_TOKEN }}

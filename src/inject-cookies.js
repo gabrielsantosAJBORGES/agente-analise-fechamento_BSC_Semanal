@@ -22,17 +22,18 @@ function parseCookies(raw) {
 
     for (const domain of domains) {
       if (name === 'RAP_XSRF_TOKEN' && domain === '.google.com') continue;
+      const isHostOnly = name.startsWith('__Host-') || name === 'RAP_XSRF_TOKEN';
       cookies.push({
         name,
         value,
-        domain: name === 'RAP_XSRF_TOKEN' ? domain : '.google.com',
+        domain: isHostOnly ? 'datastudio.google.com' : '.google.com',
         path: '/',
         expires: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
-        httpOnly: name.includes('SID') && !name.includes('SAPISID'),
-        secure: isSecure || true,
+        httpOnly: false,
+        secure: true,
         sameSite: name.includes('3P') ? 'None' : 'Lax'
       });
-      if (name !== 'RAP_XSRF_TOKEN') break; // adiciona apenas 1 vez para .google.com
+      if (!isHostOnly) break;
     }
   }
   return cookies;
