@@ -1,0 +1,53 @@
+name: Fechamento Mensal BSC Looker Studio Z-API
+
+on:
+  schedule:
+    # Executa automaticamente todo dia 6 de cada mes as 08:00 da manha (horario de Brasilia = 11:00 UTC)
+    - cron: '0 11 6 * *'
+  workflow_dispatch:
+
+jobs:
+  fechamento-mensal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Baixar codigo do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Instalar dependencias do projeto
+        run: npm ci || npm install
+
+      - name: Instalar navegador Chromium do Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Executar Agente de Fechamento Mensal Comparativo e enviar via Z-API
+        env:
+          CI: 'true'
+          TZ: 'America/Sao_Paulo'
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASSWORD: ${{ secrets.GOOGLE_PASSWORD }}
+          GOOGLE_STORAGE_STATE_BASE64: ${{ secrets.GOOGLE_STORAGE_STATE_BASE64 }}
+          ZAPI_INSTANCE_ID: ${{ secrets.ZAPI_INSTANCE_ID }}
+          ZAPI_TOKEN: ${{ secrets.ZAPI_TOKEN }}
+          ZAPI_CLIENT_TOKEN: ${{ secrets.ZAPI_CLIENT_TOKEN }}
+          ZAPI_GROUP_ID: ${{ secrets.ZAPI_GROUP_ID }}
+          ZAPI_GROUP_NAME: ${{ secrets.ZAPI_GROUP_NAME }}
+          ZAPI_TARGET_PHONE: ${{ secrets.ZAPI_TARGET_PHONE }}
+        run: npm run monthly
+
+      - name: Salvar relatorio gerado nos artefatos da execucao
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-fechamento-mensal
+          path: |
+            relatorios/
+            dados/*.png
+          retention-days: 60

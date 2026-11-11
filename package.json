@@ -7,6 +7,7 @@
     "login": "node src/login.js",
     "inspect": "node src/inspect.js",
     "analyze": "node src/analyze.js",
+    "monthly": "node src/monthly.js",
     "export-session": "node src/export-session.js",
     "list-groups": "node src/list-groups.js"
   },

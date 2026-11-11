@@ -53,16 +53,18 @@ export async function ensureGoogleAuthenticated(page, context) {
   const password = process.env.GOOGLE_PASSWORD;
 
   await page.goto(PAGES.principal, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(8000);
+  await page.waitForFunction(() => {
+    const txt = document.body?.innerText || '';
+    return /\d+[,.]\d+%/.test(txt);
+  }, { timeout: 25000 }).catch(() => {});
 
-  // Verifica se caiu em tela de login ou se está deslogado ("Mais detalhes" em todos os cards e sem números)
+  // Verifica se caiu em tela de login ou se está deslogado (sem percentuais carregados nos cards)
   const needsLogin = await page.evaluate(() => {
     const url = window.location.href;
     if (url.includes('accounts.google.com')) return true;
     const txt = document.body.innerText || '';
     const hasNumbers = /\d+[,.]\d+%/.test(txt);
-    const hasError = txt.includes('Erro de configuração do conjunto de dados');
-    return !hasNumbers && hasError;
+    return !hasNumbers;
   }).catch(() => true);
 
   if (!needsLogin) {
@@ -77,38 +79,60 @@ export async function ensureGoogleAuthenticated(page, context) {
 
   console.log(`🔐 Realizando login automático no Google com a conta: ${email}...`);
   const loginUrl = `https://accounts.google.com/ServiceLogin?hl=pt-BR&continue=${encodeURIComponent(PAGES.principal)}`;
-  await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(3000);
+  await page.goto(loginUrl, { waitUntil: 'networkidle' }).catch(() => {});
+  await page.waitForTimeout(2000);
 
-  // Se aparecer lista de contas ("Escolha uma conta"), clica em "Usar outra conta" ou na conta correspondente
-  const emailInput = page.locator('input[type="email"]');
-  if ((await emailInput.count()) === 0) {
-    const targetAccount = page.locator(`[data-identifier="${email}"]`).first();
-    if (await targetAccount.count()) {
-      await targetAccount.click();
-      await page.waitForTimeout(2500);
-    } else {
-      const useAnother = page.locator('text=/Usar outra conta|Use another account/i').first();
-      if (await useAnother.count()) {
-        await useAnother.click();
-        await page.waitForTimeout(2500);
-      }
+  // Aguarda o campo de e-mail (#identifierId) ou a lista de contas ([data-identifier])
+  const emailInput = page.locator('input#identifierId, input[type="email"]').first();
+  const accountItem = page.locator(`[data-identifier="${email}"]`).first();
+
+  await Promise.race([
+    emailInput.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
+    accountItem.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})
+  ]);
+
+  if (await accountItem.isVisible().catch(() => false)) {
+    await accountItem.click();
+    await page.waitForTimeout(3000);
+  } else if (!(await emailInput.isVisible().catch(() => false))) {
+    const useAnother = page.locator('text=/Usar outra conta|Use another account/i').first();
+    if (await useAnother.isVisible().catch(() => false)) {
+      await useAnother.click();
+      await emailInput.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
     }
   }
 
-  if (await emailInput.count()) {
+  if (await emailInput.isVisible().catch(() => false)) {
+    await emailInput.click();
     await emailInput.fill(email);
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(500);
+    const nextBtn = page.locator('#identifierNext button, #identifierNext, button:has-text("Avançar"), button:has-text("Next")').first();
+    if (await nextBtn.isVisible().catch(() => false)) {
+      await nextBtn.click();
+    } else {
+      await page.keyboard.press('Enter');
+    }
   }
 
-  const passInput = page.locator('input[type="password"]').first();
-  await passInput.waitFor({ state: 'visible', timeout: 15000 });
+  const passInput = page.locator('input[name="Passwd"], input[type="password"]:not([aria-hidden="true"])').first();
+  await passInput.waitFor({ state: 'visible', timeout: 20000 });
+  await page.waitForTimeout(500);
+  await passInput.click();
   await passInput.fill(password);
-  await page.keyboard.press('Enter');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(DATA_DIR, 'login_debug_1.png') }).catch(() => {});
+
+  const passNextBtn = page.locator('#passwordNext button, #passwordNext, button:has-text("Avançar"), button:has-text("Next")').first();
+  if (await passNextBtn.isVisible().catch(() => false)) {
+    await passNextBtn.click();
+  } else {
+    await page.keyboard.press('Enter');
+  }
 
   console.log('⏳ Aguardando redirecionamento para o Looker Studio após login...');
-  await page.waitForTimeout(14000);
+  await page.waitForURL(/datastudio\.google\.com|lookerstudio\.google\.com/, { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(10000);
+  await page.screenshot({ path: path.join(DATA_DIR, 'login_debug_2.png') }).catch(() => {});
 
   // Salva o estado atualizado para as próximas execuções
   try {
@@ -175,6 +199,15 @@ export async function launchBrowser(headless = true) {
     ],
     ignoreDefaultArgs: ['--enable-automation']
   });
+
+  if (fs.existsSync(STORAGE_STATE_PATH)) {
+    try {
+      const st = JSON.parse(fs.readFileSync(STORAGE_STATE_PATH, 'utf-8'));
+      if (st.cookies && st.cookies.length > 0) {
+        await context.addCookies(st.cookies);
+      }
+    } catch (e) {}
+  }
 
   return context;
 }

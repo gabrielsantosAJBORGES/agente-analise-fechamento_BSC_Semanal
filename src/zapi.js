@@ -11,7 +11,7 @@ export async function sendZApiMessage(messageText) {
   const instanceId = process.env.ZAPI_INSTANCE_ID;
   const token = process.env.ZAPI_TOKEN;
   const clientToken = process.env.ZAPI_CLIENT_TOKEN;
-  const targetGroupsRaw = process.env.ZAPI_GROUP_ID || process.env.ZAPI_TARGET_PHONE;
+  const targetGroupsRaw = process.env.ZAPI_GROUP_ID || process.env.ZAPI_TARGET_PHONE || '120363431272257338-group';
   const targetGroupName = process.env.ZAPI_GROUP_NAME || 'Operação sem Falhas';
 
   if (!instanceId || !token || instanceId.includes('SEU_INSTANCE_ID')) {
@@ -82,7 +82,7 @@ export async function sendZApiMessage(messageText) {
  */
 export async function listZApiGroups(instanceId, token, headers) {
   const groups = [];
-  for (let page = 1; page <= 5; page++) {
+  for (let page = 1; page <= 25; page++) {
     const url = `https://api.z-api.io/instances/${instanceId}/token/${token}/groups?page=${page}&pageSize=100`;
     const res = await fetch(url, { method: 'GET', headers });
     if (!res.ok) break;

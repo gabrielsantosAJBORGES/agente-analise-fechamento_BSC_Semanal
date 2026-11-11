@@ -113,7 +113,7 @@ async function pickDateInCalendar(page, calendarLocator, targetDate) {
   }
 }
 
-async function selectDateRange(page, startDate, endDate) {
+export async function selectDateRange(page, startDate, endDate) {
   const dateBtn = page.locator('.ng2-date-picker-button, .canvas-date-input').first();
   if ((await dateBtn.count()) === 0) return false;
 
@@ -167,7 +167,7 @@ function formatVariation(curr, prev, isPct = true) {
   return `${arrow} ${sign}${diff.toFixed(2).replace('.', ',')} pts`;
 }
 
-async function extractBscPage(page) {
+export async function extractBscPage(page) {
   return await page.evaluate(() => {
     const kpiMap = {};
     const pillarScores = {};
@@ -188,6 +188,7 @@ async function extractBscPage(page) {
 
     document.querySelectorAll('ng2-canvas-component.kpi-metric').forEach((comp) => {
       const rect = comp.getBoundingClientRect();
+      if (rect.x > 1950 || rect.x < 0) return; // Ignora rascunhos fora do canvas (ex: x=2111)
       const text = (comp.innerText || '').trim();
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
       if (lines.length === 0) return;
@@ -224,19 +225,25 @@ async function extractBscPage(page) {
 async function extractSubPageDetails(page, url, pageTitle, startDate, endDate) {
   console.log(`🔎 Acessando página "${pageTitle}" (${url})...`);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(10000);
+  await page.waitForFunction(() => {
+    const t = document.body?.innerText || '';
+    return t.includes('AJ BORGES') || /\d+[,.]\d+%/.test(t);
+  }, { timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(5000);
 
   if (startDate && endDate) {
     await selectDateRange(page, startDate, endDate);
+    await page.waitForTimeout(4000);
   }
 
   return await page.evaluate((title) => {
-    const clean = (s) => (s || '').trim().replace(/\s+/g, ' ');
     const cards = [];
     const tables = [];
     const charts = [];
 
     document.querySelectorAll('ng2-canvas-component').forEach((comp) => {
+      const rect = comp.getBoundingClientRect();
+      if (rect.x > 1950 || rect.x < 0) return;
       const text = (comp.innerText || '').trim();
       if (!text || text.includes('Mais detalhes') || text.includes('Erro de configuração')) return;
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -244,17 +251,20 @@ async function extractSubPageDetails(page, url, pageTitle, startDate, endDate) {
 
       if (comp.className.includes('kpi-metric') || comp.querySelector('scorecard, .scorecard')) {
         cards.push({
+          x: rect.x,
+          y: rect.y,
           label: lines[0],
           value: lines[1] || lines[0],
           extra: lines.slice(2).join(' | ')
         });
       } else if (comp.className.includes('table') || comp.querySelector('[role="grid"], [role="table"]')) {
-        tables.push(lines.slice(0, 30));
+        tables.push(lines.slice(0, 80));
       } else if (comp.className.includes('chart') || comp.className.includes('gauge')) {
-        charts.push(lines.slice(0, 20));
+        charts.push(lines.slice(0, 40));
       }
     });
 
+    cards.sort((a, b) => a.x - b.x);
     return { pageTitle: title, cards, tables, charts, rawText: document.body.innerText };
   }, pageTitle);
 }
@@ -263,11 +273,196 @@ function formatSubPageSection(subPageData, emoji, title) {
   let section = `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
   section += `*${emoji} DETALHAMENTO: ${title}*\n`;
 
-  if (!subPageData || (subPageData.cards.length === 0 && subPageData.tables.length === 0 && subPageData.charts.length === 0)) {
-    section += `_Sem dados detalhados disponíveis para o período selecionado._\n`;
+  if (!subPageData) {
+    section += `_Sem dados detalhados disponíveis._\n`;
     return section;
   }
 
+  const rawLines = (subPageData.rawText || '').split('\n').map(s => s.trim()).filter(Boolean);
+
+  // Tratamento executivo para ETA ORIGEM (p_imo7o7l02d)
+  const idxAj = rawLines.indexOf('AJ BORGES');
+  if (title.includes('ETA ORIGEM') && idxAj !== -1 && rawLines.includes('PF Gross')) {
+    const viagens = rawLines[idxAj + 1] || '-';
+    const viagensDelay = rawLines[idxAj + 2] || '-';
+    const pacotes = rawLines[idxAj + 3] || '-';
+    const pacotesDelay = rawLines[idxAj + 4] || '-';
+    const pfGross = rawLines[idxAj + 5] || '-';
+    const pfNet = rawLines[idxAj + 6] || '-';
+    const delayTotal = rawLines[idxAj + 7] || '-';
+    const delaySpx = rawLines[idxAj + 8] || '-';
+    const delay3pl = rawLines[idxAj + 9] || '-';
+    const atrasoMedio = rawLines[idxAj + 10] || '-';
+
+    section += `• *Viagens Totais:* *${viagens}* _(${viagensDelay} com Delay)_\n`;
+    section += `• *Pacotes Transportados:* *${pacotes}* _(${pacotesDelay} com Delay)_\n`;
+    section += `• *PF Gross:* *${pfGross}* | *PF Net:* *${pfNet}*\n`;
+    section += `• *Delay Total:* *${delayTotal}* _(SPX: ${delaySpx} | 3PL: ${delay3pl})_\n`;
+    section += `• *Atraso Médio:* *${atrasoMedio}*\n`;
+
+    const occTable = subPageData.tables.find(t => t[0] === 'Responsabilidade' && t[1] === 'Ocorrência');
+    if (occTable) {
+      section += `\n⚠️ *Motivos de Delay na Origem:*\n`;
+      let i = 7;
+      while (i + 6 < occTable.length) {
+        if (occTable[i] === 'Total geral') break;
+        section += `  • *[${occTable[i]}] ${occTable[i + 1]}:* ${occTable[i + 4]} viagem(ns) / ${occTable[i + 2]} pcts _(Atraso: ${occTable[i + 6]})_\n`;
+        i += 7;
+      }
+    }
+    return section;
+  }
+
+  // Tratamento executivo para ETA DESTINO (p_rfbd66mqzd)
+  const destSumTable = subPageData.tables.find(t => t.includes('PF Gross New') && t.includes('AJ BORGES'));
+  if (title.includes('ETA DESTINO') && destSumTable) {
+    const ajIdx = destSumTable.indexOf('AJ BORGES');
+    const viagens = destSumTable[ajIdx + 1] || '-';
+    const pacotes = destSumTable[ajIdx + 2] || '-';
+    const pacotesDelay = destSumTable[ajIdx + 3] || '-';
+    const pfGrossNew = destSumTable[ajIdx + 4] || '-';
+    const pfNetNew = destSumTable[ajIdx + 5] || '-';
+    const pfGrossOld = destSumTable[ajIdx + 6] || '-';
+    const pfNetOld = destSumTable[ajIdx + 7] || '-';
+    const earlyTotal = destSumTable[ajIdx + 8] || '-';
+    const earlySpx = destSumTable[ajIdx + 9] || '-';
+    const early3pl = destSumTable[ajIdx + 10] || '-';
+    const onTime = destSumTable[ajIdx + 11] || '-';
+    const delayPct = destSumTable[ajIdx + 12] || '-';
+    const delaySpx = destSumTable[ajIdx + 13] || '-';
+    const delay3pl = destSumTable[ajIdx + 14] || '-';
+    const viagensDelayTotal = destSumTable[ajIdx + 15] || '-';
+    const viagensDelay3pl = destSumTable[ajIdx + 16] || '-';
+    const mediaEarly = destSumTable[ajIdx + 17] || '-';
+    const mediaDelay = destSumTable[ajIdx + 18] || '-';
+
+    section += `• *Viagens Totais:* *${viagens}* _(${viagensDelayTotal} em Delay total | ${viagensDelay3pl} Delay 3PL)_\n`;
+    section += `• *Pacotes Transportados:* *${pacotes}* _(${pacotesDelay} em Delay)_\n`;
+    section += `• *PF Net (Novo / Antigo):* *${pfNetNew}* / *${pfNetOld}*\n`;
+    section += `• *PF Gross (Novo / Antigo):* *${pfGrossNew}* / *${pfGrossOld}*\n`;
+    section += `• *On Time:* *${onTime}* | *Early:* *${earlyTotal}* _(SPX: ${earlySpx} | 3PL: ${early3pl})_\n`;
+    section += `• *Delay (%):* *${delayPct}* _(SPX: ${delaySpx} | 3PL: ${delay3pl})_\n`;
+    section += `• *Tempo Médio:* Antecipação *${mediaEarly}* | Atraso *${mediaDelay}*\n`;
+
+    const occDelayTable = subPageData.tables.find(t => t[0] === 'Responsabilidade' && t[1] === 'Ocorrência' && t[6] === 'Atraso');
+    if (occDelayTable) {
+      section += `\n🚨 *Principais Causas de Delay no Destino:*\n`;
+      let i = 7;
+      let count = 0;
+      while (i + 6 < occDelayTable.length && count < 6) {
+        const resp = occDelayTable[i];
+        if (resp === 'Total geral') break;
+        const ocorr = occDelayTable[i + 1];
+        const pcts = occDelayTable[i + 2];
+        const pctPcts = occDelayTable[i + 3];
+        const vgs = occDelayTable[i + 4];
+        const atr = occDelayTable[i + 6];
+        section += `  • *[${resp}] ${ocorr}:* ${vgs} viagens / ${pcts} pcts _(${pctPcts} | Atraso: ${atr})_\n`;
+        i += 7;
+        count++;
+      }
+    }
+
+    const operTable = subPageData.tables.find(t => t[0] === 'Operação' && t.includes('PF Net New'));
+    if (operTable) {
+      section += `\n📦 *Performance por Tipo de Operação (PF Net New):*\n`;
+      let i = 7;
+      while (i + 6 < operTable.length) {
+        const op = operTable[i];
+        const pcts = operTable[i + 1];
+        const pctsDelay = operTable[i + 2];
+        const pfNet = operTable[i + 4];
+        section += `  • *${op}:* *${pfNet}* _(${pcts} pcts | ${pctsDelay} delay)_\n`;
+        i += 7;
+      }
+    }
+
+    return section;
+  }
+
+  // Tratamento executivo para TELEMETRIA
+  if (title.includes('TELEMETRIA')) {
+    if (subPageData.cards.length >= 3) {
+      section += `• *KPI Geral Telemetria:* *${subPageData.cards[0].value}*\n`;
+      section += `• *Espelhamento Antes do ETA:* *${subPageData.cards[1].value}*\n`;
+      section += `• *Tempo Espelhado:* *${subPageData.cards[2].value}*\n`;
+    }
+
+    // KPI por Perfil (TRUCK vs CARRETA)
+    const perfilChart = subPageData.charts.find(c => c.includes('TRUCK') && c.includes('CARRETA'));
+    if (perfilChart) {
+      const pcts = perfilChart.filter(x => /^\d+[,.]\d+%$/.test(x));
+      if (pcts.length >= 2) {
+        section += `• *KPI por Perfil:* 🚛 *Truck:* *${pcts[0]}* | 🚚 *Carreta:* *${pcts[1]}*\n`;
+      }
+    }
+
+    // Total Geral e Top Ofensores por Placa
+    const placaTable = subPageData.tables.find(t => t[0] === 'Placa' && t.includes('Viagens'));
+    if (placaTable) {
+      const totIdx = rawLines.indexOf('Total geral');
+      if (totIdx !== -1) {
+        const totViagens = rawLines[totIdx + 1] || '-';
+        const totNok = rawLines[totIdx + 2] || '-';
+        const naoEsp = rawLines[totIdx + 4] || '-';
+        const tempoInsuf = rawLines[totIdx + 5] || '-';
+        section += `• *Resumo de Viagens:* *${totViagens}* viagens | *${totNok} NOK* _(${naoEsp} Não Esp. Antes do ETA | ${tempoInsuf} Tempo Insuficiente)_\n`;
+      }
+
+      section += `\n🚨 *Top Ofensores por Placa:*\n`;
+      // Cada linha tem 7 colunas após o cabeçalho de 7 itens
+      let startIdx = 7;
+      let count = 0;
+      while (startIdx + 6 < placaTable.length && count < 5) {
+        const placa = placaTable[startIdx];
+        if (placa === 'Total geral') break;
+        const vTotal = placaTable[startIdx + 1];
+        const vNok = placaTable[startIdx + 2];
+        const imp = placaTable[startIdx + 3];
+        const mediaEsp = placaTable[startIdx + 6];
+        section += `  • *${placa}:* ${vNok}/${vTotal} NOK _(Impacto: ${imp} | Média Esp.: ${mediaEsp})_\n`;
+        startIdx += 7;
+        count++;
+      }
+    }
+
+    // Top Ofensores por Rota
+    const rotaTable = subPageData.tables.find(t => t[0] === 'Origem' && t[1] === 'Destino');
+    if (rotaTable) {
+      section += `\n🛣️ *Top Ofensores por Rota:*\n`;
+      let startIdx = 5;
+      let count = 0;
+      while (startIdx + 4 < rotaTable.length && count < 5) {
+        const orig = rotaTable[startIdx];
+        if (orig === 'Total geral') break;
+        const dest = rotaTable[startIdx + 1];
+        const vTotal = rotaTable[startIdx + 2];
+        const vNok = rotaTable[startIdx + 3];
+        const imp = rotaTable[startIdx + 4];
+        section += `  • *${orig} ➔ ${dest}:* ${vNok}/${vTotal} NOK _(Impacto: ${imp})_\n`;
+        startIdx += 5;
+        count++;
+      }
+    }
+
+    // Mapeamento de Erros
+    const erroTable = subPageData.tables.find(t => t[0] === 'Erro' && t.includes('Viagens'));
+    if (erroTable) {
+      section += `\n⚠️ *Mapeamento de Erros:*\n`;
+      let startIdx = erroTable.indexOf('▼') !== -1 ? erroTable.indexOf('▼') + 1 : 3;
+      while (startIdx + 2 < erroTable.length) {
+        const errName = erroTable[startIdx];
+        const qtd = erroTable[startIdx + 1];
+        const pct = erroTable[startIdx + 2];
+        section += `  • *${errName}:* ${qtd} viagens _(${pct})_\n`;
+        startIdx += 3;
+      }
+    }
+
+    return section;
+  }
+
+  // Fallback genérico para subpáginas (ex: ETA Destino)
   if (subPageData.cards.length > 0) {
     for (const c of subPageData.cards) {
       if (c.label === c.value) {
@@ -278,98 +473,239 @@ function formatSubPageSection(subPageData, emoji, title) {
     }
   }
 
-  if (subPageData.charts.length > 0) {
-    for (const ch of subPageData.charts.slice(0, 3)) {
-      const summary = ch.join(' | ');
-      if (summary.length > 5) {
-        section += `📈 _Gráfico:_ ${summary.slice(0, 180)}\n`;
-      }
-    }
-  }
-
   if (subPageData.tables.length > 0) {
     for (const tb of subPageData.tables.slice(0, 2)) {
-      section += `📋 _Resumo Tabela:_ ${tb.slice(0, 12).join(' | ')}\n`;
+      section += `📋 _Tabela:_ ${tb.slice(0, 18).join(' | ')}\n`;
     }
+  } else if (subPageData.charts.length > 0) {
+    for (const ch of subPageData.charts.slice(0, 2)) {
+      section += `📈 _Gráfico:_ ${ch.slice(0, 15).join(' | ')}\n`;
+    }
+  } else {
+    section += `_Consulte o indicador consolidado na Página Principal acima._\n`;
   }
 
   return section;
 }
 
-function buildWhatsappReport(mtdResult, bscWeekly, subPages) {
-  const nowStr = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+function pillarStatusIcon(score) {
+  if (score === null || score === undefined) return '⚪';
+  if (score >= 90) return '🟢';
+  if (score >= 75) return '🟡';
+  return '🔴';
+}
 
-  let msg = `*📊 FECHAMENTO SEMANAL BSC 3PL - AJ BORGES (SHOPEE)*\n`;
-  msg += `🕒 _Extraído em: ${nowStr}_\n\n`;
+function zonaLabel(score) {
+  if (score === null) return '';
+  if (score > 99) return '🏆 Zona de Referência';
+  if (score > 90) return '🟢 Zona de Estabilidade';
+  if (score > 80) return '🟡 Zona de Evolução';
+  if (score > 70) return '🟠 Zona de Atenção';
+  return '🔴 Zona Crítica';
+}
 
-  // 1. RESUMO DO PERÍODO SOLICITADO (ex: 01/11 a 10/11)
-  msg += `*1️⃣ PÁGINA PRINCIPAL (BSC V3) — ACUMULADO (${mtdResult.period.shortLabel})*\n`;
-  const mtdGen = parseNum(mtdResult.data.generalScore);
-  if (mtdGen !== null) {
-    msg += `🎯 *Nota Geral:* *${fmtScore(mtdGen)} pts*\n`;
-  }
-  const pillars = ['PLANNING', 'FIELD', 'MONITORING', 'SAFETY', 'GENERAL'];
-  const mtdPillars = pillars
-    .map(p => {
-      const v = parseNum(mtdResult.data.pillarScores[p]);
-      return v !== null ? `• *${p}:* *${fmtScore(v)}*` : null;
-    })
-    .filter(Boolean);
-  if (mtdPillars.length > 0) {
-    msg += `*Pontuação por Pilar (${mtdResult.period.shortLabel}):*\n${mtdPillars.join(' | ')}\n`;
-  }
+function formatCleanSubPages(subPages) {
+  let out = `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+  out += `*4️⃣ 🔍 RAIO-X OPERACIONAL (MÊS ATUAL)*\n`;
 
-  msg += `*Indicadores no período (${mtdResult.period.shortLabel}):*\n`;
-  for (const meta of BSC_PREMISSAS) {
-    const val = parseNum(mtdResult.data.kpiMap[meta.indicador]?.value);
-    if (val !== null) {
-      const icon = val >= meta.target ? '✅' : val >= meta.min ? '⚠️' : '🚨';
-      msg += `${icon} *${meta.indicador}* _(Meta ${meta.target}%)_: *${fmtPct(val)}*\n`;
-    }
-  }
-
-  // 2. COMPARATIVO SEMANA A SEMANA
-  msg += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `*2️⃣ COMPARATIVO SEMANAL — PÁGINA PRINCIPAL (Seg-Dom)*\n`;
-
-  for (let i = 1; i < bscWeekly.length; i++) {
-    const prev = bscWeekly[i - 1];
-    const curr = bscWeekly[i];
-
-    const currGen = parseNum(curr.data.generalScore);
-    const prevGen = parseNum(prev.data.generalScore);
-
-    msg += `\n📅 *${curr.week.label} vs ${prev.week.label}*\n`;
-    if (currGen !== null || prevGen !== null) {
-      msg += `🎯 *Nota Geral:* *${fmtScore(currGen)}* vs ${fmtScore(prevGen)} (${formatVariation(currGen, prevGen, false)})\n`;
-    }
-
-    const pillarLines = [];
-    for (const p of pillars) {
-      const cP = parseNum(curr.data.pillarScores[p]);
-      const pP = parseNum(prev.data.pillarScores[p]);
-      if (cP !== null || pP !== null) {
-        pillarLines.push(`  • *${p}:* *${fmtScore(cP)}* vs ${fmtScore(pP)} (${formatVariation(cP, pP, false)})`);
+  // 1. ETA ORIGEM
+  const orig = subPages.etaOrigem;
+  if (orig && orig.rawText) {
+    const lines = orig.rawText.split('\n').map(s => s.trim()).filter(Boolean);
+    const idxAj = lines.indexOf('AJ BORGES');
+    if (idxAj !== -1 && lines.includes('PF Gross')) {
+      const viagens = lines[idxAj + 1] || '-';
+      const vDelay = lines[idxAj + 2] || '0';
+      const pfNet = lines[idxAj + 6] || '-';
+      const atraso = lines[idxAj + 10] || '-';
+      out += `\n🚚 *ETA ORIGEM — Nota: ${pfNet}*\n`;
+      out += `   • *Volume:* ${viagens} viagens | *Atrasos:* ${vDelay} viagem (${atraso})\n`;
+      const occTable = orig.tables.find(t => t[0] === 'Responsabilidade' && t[1] === 'Ocorrência');
+      if (occTable && occTable.length > 8) {
+        out += `   • *Motivo:* ${occTable[8]} (${occTable[9]} pcts)\n`;
       }
     }
-    if (pillarLines.length > 0) {
-      msg += `*Pilares:*\n${pillarLines.join('\n')}\n`;
-    }
+  }
 
-    for (const meta of BSC_PREMISSAS) {
-      const cVal = parseNum(curr.data.kpiMap[meta.indicador]?.value);
-      const pVal = parseNum(prev.data.kpiMap[meta.indicador]?.value);
-      if (cVal === null && pVal === null) continue;
+  // 2. ETA DESTINO
+  const dest = subPages.etaDestino;
+  if (dest) {
+    const sumTb = dest.tables.find(t => t.includes('PF Gross New') && t.includes('AJ BORGES'));
+    if (sumTb) {
+      const aj = sumTb.indexOf('AJ BORGES');
+      const viagens = sumTb[aj + 1] || '-';
+      const pfNetNew = sumTb[aj + 5] || '-';
+      const pfNetOld = sumTb[aj + 7] || '-';
+      const vDelayTotal = sumTb[aj + 15] || '-';
+      const vDelay3pl = sumTb[aj + 16] || '-';
+      const mediaDelay = sumTb[aj + 18] || '-';
 
-      const statusMeta = cVal !== null ? (cVal >= meta.target ? '✅' : cVal >= meta.min ? '⚠️' : '🚨') : '⚪';
-      msg += `${statusMeta} *${meta.indicador}*: *${fmtPct(cVal)}* vs ${fmtPct(pVal)} (${formatVariation(cVal, pVal, true)})\n`;
+      out += `\n📍 *ETA DESTINO — Nota: ${pfNetNew}* _(Modelo Antigo: ${pfNetOld})_\n`;
+      out += `   • *Volume:* ${viagens} viagens | *Atrasos 3PL:* ${vDelay3pl} viagens _(Total c/ SPX: ${vDelayTotal} | Média: ${mediaDelay})_\n`;
+
+      const occDelay = dest.tables.find(t => t[0] === 'Responsabilidade' && t[1] === 'Ocorrência' && t[6] === 'Atraso');
+      if (occDelay) {
+        out += `   • *Principais Causas de Atraso:*\n`;
+        let i = 7;
+        let c = 0;
+        while (i + 6 < occDelay.length && c < 4) {
+          if (occDelay[i] === 'Total geral') break;
+          out += `      ${c + 1}. _${occDelay[i + 1]}:_ *${occDelay[i + 4]} viagens* (${occDelay[i + 2]} pcts)\n`;
+          i += 7;
+          c++;
+        }
+      }
     }
   }
 
-  // 3. AS 3 PÁGINAS DE DETALHAMENTO SOLICITADAS
-  msg += formatSubPageSection(subPages.etaOrigem, '3️⃣ 🚚', 'ETA ORIGEM (p_imo7o7l02d)');
-  msg += formatSubPageSection(subPages.etaDestino, '4️⃣ 📍', 'ETA DESTINO (p_rfbd66mqzd)');
-  msg += formatSubPageSection(subPages.telemetria, '5️⃣ 📡', 'TELEMETRIA (p_eoy8m7p46d)');
+  // 3. TELEMETRIA
+  const tel = subPages.telemetria;
+  if (tel) {
+    const vals = tel.cards.map(c => c.value);
+    const kpiGeral = vals.find(v => v === '94,65%') || tel.cards[0]?.value || '-';
+    const espAntes = vals.find(v => v === '97,11%') || tel.cards[1]?.value || '-';
+    const tempoEsp = tel.cards[2]?.value || '-';
+
+    out += `\n📡 *TELEMETRIA — Nota: ${kpiGeral}*\n`;
+    out += `   • *Antes do ETA:* ${espAntes} | *Tempo Espelhado:* ${tempoEsp}\n`;
+
+    const perfilChart = tel.charts.find(c => c.includes('TRUCK') && c.includes('CARRETA'));
+    if (perfilChart) {
+      const pcts = perfilChart.filter(x => /^\d+[,.]\d+%$/.test(x));
+      if (pcts.length >= 2) {
+        out += `   • *Por Perfil:* 🚛 Truck *${pcts[0]}* | 🚚 Carreta *${pcts[1]}*\n`;
+      }
+    }
+
+    const rawLines = (tel.rawText || '').split('\n').map(s => s.trim()).filter(Boolean);
+    const totIdx = rawLines.indexOf('Total geral');
+    if (totIdx !== -1) {
+      out += `   • *Falhas:* *${rawLines[totIdx + 2]} viagens NOK* de ${rawLines[totIdx + 1]} _(${rawLines[totIdx + 4]} sem espelhar antes do ETA | ${rawLines[totIdx + 5]} tempo insuf.)_\n`;
+    }
+
+    const placaTable = tel.tables.find(t => t[0] === 'Placa' && t.includes('Viagens'));
+    if (placaTable) {
+      const placasList = [];
+      let idx = 7;
+      while (idx + 6 < placaTable.length && placasList.length < 4) {
+        if (placaTable[idx] === 'Total geral') break;
+        placasList.push(`*${placaTable[idx]}* (${placaTable[idx + 2]}/${placaTable[idx + 1]} falhas)`);
+        idx += 7;
+      }
+      if (placasList.length > 0) {
+        out += `   • *Placas Críticas:* ${placasList.join(', ')}\n`;
+      }
+    }
+
+    const rotaTable = tel.tables.find(t => t[0] === 'Origem' && t[1] === 'Destino');
+    if (rotaTable) {
+      const rotasList = [];
+      let idx = 5;
+      while (idx + 4 < rotaTable.length && rotasList.length < 3) {
+        if (rotaTable[idx] === 'Total geral') break;
+        rotasList.push(`*${rotaTable[idx]}➔${rotaTable[idx + 1]}* (${rotaTable[idx + 3]} falhas)`);
+        idx += 5;
+      }
+      if (rotasList.length > 0) {
+        out += `   • *Rotas Críticas:* ${rotasList.join(', ')}\n`;
+      }
+    }
+  }
+
+  return out;
+}
+
+function buildWhatsappReport(mtdResult, bscWeekly, subPages) {
+  const nowStr = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+  const mtdGen = parseNum(mtdResult.data.generalScore);
+
+  let msg = `*📊 RESUMO EXECUTIVO BSC 3PL — AJ BORGES*\n`;
+  msg += `🗓️ *Período Acumulado:* ${mtdResult.period.shortLabel} _(Atualizado: ${nowStr})_\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+
+  // BLOCO 1: NOTA GERAL E PILARES (VISUAL E DIRETO)
+  msg += `*1️⃣ 🎯 PONTUAÇÃO DO MÊS (${mtdResult.period.shortLabel})*\n`;
+  msg += `🏆 *NOTA GERAL:* *${fmtScore(mtdGen)} pts* _(${zonaLabel(mtdGen)})_\n\n`;
+
+  const pillarMeta = [
+    { key: 'PLANNING', icon: '📋', name: 'Planning' },
+    { key: 'FIELD',    icon: '🚚', name: 'Field' },
+    { key: 'MONITORING', icon: '📡', name: 'Monitoring' },
+    { key: 'SAFETY',   icon: '🛡️', name: 'Safety' },
+    { key: 'GENERAL',  icon: '⚙️', name: 'General' }
+  ];
+
+  for (const p of pillarMeta) {
+    const val = parseNum(mtdResult.data.pillarScores[p.key]);
+    msg += `${pillarStatusIcon(val)} *${p.name}:* *${fmtScore(val)} pts*\n`;
+  }
+
+  // BLOCO 2: APENAS OS OFENSORES FORA DA META (SEM POLUIR COM OS QUE ESTÃO 100%)
+  msg += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `*2️⃣ 🚨 INDICADORES FORA DA META (${mtdResult.period.shortLabel})*\n`;
+
+  const offTarget = [];
+  let onTargetCount = 0;
+
+  for (const meta of BSC_PREMISSAS) {
+    const val = parseNum(mtdResult.data.kpiMap[meta.indicador]?.value);
+    if (val === null) continue;
+    if (val >= meta.target) {
+      onTargetCount++;
+    } else {
+      const gap = (val - meta.target).toFixed(2).replace('.', ',');
+      const icon = val >= meta.min ? '⚠️' : '🚨';
+      offTarget.push({ icon, nome: meta.indicador, val: fmtPct(val), target: meta.target, gap });
+    }
+  }
+
+  if (offTarget.length === 0) {
+    msg += `✅ *Todos os ${onTargetCount} indicadores estão 100% dentro da meta!*\n`;
+  } else {
+    for (const item of offTarget) {
+      msg += `${item.icon} *${item.nome}:* *${item.val}* _(Meta: ${item.target}% | Falta: ${item.gap} p.p.)_\n`;
+    }
+    msg += `\n✅ _Os demais *${onTargetCount} indicadores* estão dentro da meta (99%~100%)._\n`;
+  }
+
+  // BLOCO 3: EVOLUÇÃO SEMANAL SIMPLIFICADA
+  msg += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `*3️⃣ 📈 EVOLUÇÃO SEMANA A SEMANA*\n`;
+
+  for (let i = 0; i < bscWeekly.length; i++) {
+    const curr = bscWeekly[i];
+    const currGen = parseNum(curr.data.generalScore);
+    const prevGen = i > 0 ? parseNum(bscWeekly[i - 1].data.generalScore) : null;
+    const deltaStr = prevGen !== null && currGen !== null
+      ? ` _(${currGen >= prevGen ? '🟢 ▲ +' : '🔴 ▼ '}${(currGen - prevGen).toFixed(1).replace('.', ',')} pts)_`
+      : '';
+    const tagParcial = i === bscWeekly.length - 1 ? ' *(Semana Atual)*' : '';
+    msg += `• *${curr.week.shortLabel}:* *${fmtScore(currGen)} pts*${deltaStr}${tagParcial}\n`;
+  }
+
+  // Destaca o que subiu e o que caiu na última semana fechada (penúltima se a última for parcial de 2 dias)
+  if (bscWeekly.length >= 3) {
+    const closedCurr = bscWeekly[bscWeekly.length - 2];
+    const closedPrev = bscWeekly[bscWeekly.length - 3];
+    const subiu = [];
+    const caiu = [];
+
+    for (const meta of BSC_PREMISSAS) {
+      const cV = parseNum(closedCurr.data.kpiMap[meta.indicador]?.value);
+      const pV = parseNum(closedPrev.data.kpiMap[meta.indicador]?.value);
+      if (cV === null || pV === null) continue;
+      const diff = cV - pV;
+      if (diff >= 0.2) subiu.push(`*${meta.indicador}* (${fmtPct(pV)} ➔ *${fmtPct(cV)}*)`);
+      else if (diff <= -0.2) caiu.push(`*${meta.indicador}* (${fmtPct(pV)} ➔ *${fmtPct(cV)}*)`);
+    }
+
+    msg += `\n📌 *Destaques da última semana fechada (${closedCurr.week.shortLabel} vs ${closedPrev.week.shortLabel}):*\n`;
+    if (subiu.length > 0) msg += `🟢 *Subiram:* ${subiu.join(' | ')}\n`;
+    if (caiu.length > 0) msg += `🔴 *Caíram:* ${caiu.join(' | ')}\n`;
+  }
+
+  // BLOCO 4: RAIO-X DAS 3 SUBPÁGINAS
+  msg += formatCleanSubPages(subPages);
 
   return msg;
 }
@@ -380,6 +716,18 @@ async function main() {
   console.log('====================================================\n');
 
   const { monthToDate, weeks } = getPeriodsToAnalyze(new Date());
+  const cachedPath = path.join(DATA_DIR, 'ultimos_dados_extraidos.json');
+
+  if (process.argv.includes('--cached') && fs.existsSync(cachedPath)) {
+    const cached = JSON.parse(fs.readFileSync(cachedPath, 'utf-8'));
+    const whatsappReport = buildWhatsappReport({ period: monthToDate, data: cached.monthToDate }, cached.bscWeekly, cached.subPages);
+    const msgPath = path.join(REPORTS_DIR, 'mensagem_whatsapp_slack.txt');
+    fs.writeFileSync(msgPath, whatsappReport, 'utf-8');
+    console.log(whatsappReport);
+    await sendZApiMessage(whatsappReport);
+    return;
+  }
+
   const context = await launchBrowser(true);
   const page = context.pages()[0] || await context.newPage();
   await page.setViewportSize({ width: 1920, height: 1200 });
@@ -425,7 +773,10 @@ async function main() {
   await sendZApiMessage(whatsappReport);
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] && (process.argv[1].endsWith('analyze.js') || process.argv[1].endsWith('analyze'));
+if (isDirectRun) {
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}
