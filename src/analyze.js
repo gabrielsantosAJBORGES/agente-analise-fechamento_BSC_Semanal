@@ -29,32 +29,23 @@ export const BSC_PREMISSAS = [
 
 export function getPeriodsToAnalyze(referenceDate = new Date()) {
   const today = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
-  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
   const fmt = (d) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 
-  const monthToDate = {
-    isSummary: true,
-    label: `Acumulado ${fmt(firstOfMonth)} a ${fmt(today)}`,
-    shortLabel: `${fmt(firstOfMonth)} a ${fmt(today)}`,
-    start: firstOfMonth,
-    end: today
-  };
-
-  const dayOfWeek = (today.getDay() + 6) % 7; // Seg=0 ... Dom=6
-  const currentMonday = new Date(today);
-  currentMonday.setDate(today.getDate() - dayOfWeek);
+  // A análise semanal é SEMPRE estritamente de Segunda a Domingo.
+  // Quando roda na quarta-feira (ou hoje), a última semana completa fechada terminou no domingo anterior.
+  const dayOfWeek = today.getDay(); // 0=Dom, 1=Seg, 2=Ter, 3=Qua, 4=Qui, 5=Sex, 6=Sab
+  const daysSinceLastSunday = dayOfWeek === 0 ? 7 : dayOfWeek;
+  const lastClosedSunday = new Date(today);
+  lastClosedSunday.setDate(today.getDate() - daysSinceLastSunday);
 
   const weeks = [];
+  // Gera as 4 semanas fechadas consecutivas (todas de Segunda a Domingo):
   for (let i = 3; i >= 0; i--) {
-    const start = new Date(currentMonday);
-    start.setDate(currentMonday.getDate() - i * 7);
+    const end = new Date(lastClosedSunday);
+    end.setDate(lastClosedSunday.getDate() - i * 7);
 
-    const end = new Date(start);
-    if (i === 0) {
-      end.setTime(today.getTime());
-    } else {
-      end.setDate(start.getDate() + 6);
-    }
+    const start = new Date(end);
+    start.setDate(end.getDate() - 6);
 
     weeks.push({
       weekNum: 4 - i,
@@ -65,7 +56,10 @@ export function getPeriodsToAnalyze(referenceDate = new Date()) {
     });
   }
 
-  return { monthToDate, weeks };
+  // A semana foco para análise detalhada e raio-x é a última semana completa fechada
+  const targetClosedWeek = weeks[weeks.length - 1];
+
+  return { targetClosedWeek, weeks };
 }
 
 const MONTHS_PT = ['JAN.', 'FEV.', 'MAR.', 'ABR.', 'MAI.', 'JUN.', 'JUL.', 'AGO.', 'SET.', 'OUT.', 'NOV.', 'DEZ.'];
@@ -222,7 +216,7 @@ export async function extractBscPage(page) {
  * Extrai todos os indicadores, scorecards, gráficos e tabelas de uma subpágina específica
  * (ETA Origem p_imo7o7l02d, ETA Destino p_rfbd66mqzd, Telemetria p_eoy8m7p46d)
  */
-async function extractSubPageDetails(page, url, pageTitle, startDate, endDate) {
+export async function extractSubPageDetails(page, url, pageTitle, startDate, endDate) {
   console.log(`🔎 Acessando página "${pageTitle}" (${url})...`);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => {
@@ -504,9 +498,9 @@ function zonaLabel(score) {
   return '🔴 Zona Crítica';
 }
 
-function formatCleanSubPages(subPages) {
+function formatCleanSubPages(subPages, weekLabel = 'SEMANA FECHADA') {
   let out = `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
-  out += `*4️⃣ 🔍 RAIO-X OPERACIONAL (MÊS ATUAL)*\n`;
+  out += `*4️⃣ 🔍 RAIO-X OPERACIONAL (${weekLabel.toUpperCase()})*\n`;
 
   // 1. ETA ORIGEM
   const orig = subPages.etaOrigem;
@@ -615,17 +609,19 @@ function formatCleanSubPages(subPages) {
   return out;
 }
 
-function buildWhatsappReport(mtdResult, bscWeekly, subPages) {
+export function buildWhatsappReport(targetResult, bscWeekly, subPages) {
   const nowStr = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  const mtdGen = parseNum(mtdResult.data.generalScore);
+  const weekGen = parseNum(targetResult.data.generalScore);
+  const weekShort = targetResult.week.shortLabel;
 
-  let msg = `*📊 RESUMO EXECUTIVO BSC 3PL — AJ BORGES*\n`;
-  msg += `🗓️ *Período Acumulado:* ${mtdResult.period.shortLabel} _(Atualizado: ${nowStr})_\n`;
+  let msg = `*📊 RESUMO EXECUTIVO SEMANAL BSC 3PL — AJ BORGES*\n`;
+  msg += `🗓️ *Semana Fechada Analisada:* ${weekShort} _(Segunda a Domingo)_\n`;
+  msg += `⏱️ _Atualizado em: ${nowStr}_\n`;
   msg += `━━━━━━━━━━━━━━━━━━━━━━\n`;
 
-  // BLOCO 1: NOTA GERAL E PILARES (VISUAL E DIRETO)
-  msg += `*1️⃣ 🎯 PONTUAÇÃO DO MÊS (${mtdResult.period.shortLabel})*\n`;
-  msg += `🏆 *NOTA GERAL:* *${fmtScore(mtdGen)} pts* _(${zonaLabel(mtdGen)})_\n\n`;
+  // BLOCO 1: NOTA GERAL E PILARES (DA SEMANA FECHADA)
+  msg += `*1️⃣ 🎯 PONTUAÇÃO DA SEMANA (${weekShort})*\n`;
+  msg += `🏆 *NOTA GERAL:* *${fmtScore(weekGen)} pts* _(${zonaLabel(weekGen)})_\n\n`;
 
   const pillarMeta = [
     { key: 'PLANNING', icon: '📋', name: 'Planning' },
@@ -636,19 +632,19 @@ function buildWhatsappReport(mtdResult, bscWeekly, subPages) {
   ];
 
   for (const p of pillarMeta) {
-    const val = parseNum(mtdResult.data.pillarScores[p.key]);
+    const val = parseNum(targetResult.data.pillarScores[p.key]);
     msg += `${pillarStatusIcon(val)} *${p.name}:* *${fmtScore(val)} pts*\n`;
   }
 
-  // BLOCO 2: APENAS OS OFENSORES FORA DA META (SEM POLUIR COM OS QUE ESTÃO 100%)
+  // BLOCO 2: APENAS OS OFENSORES FORA DA META DA SEMANA FECHADA
   msg += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `*2️⃣ 🚨 INDICADORES FORA DA META (${mtdResult.period.shortLabel})*\n`;
+  msg += `*2️⃣ 🚨 INDICADORES FORA DA META (${weekShort})*\n`;
 
   const offTarget = [];
   let onTargetCount = 0;
 
   for (const meta of BSC_PREMISSAS) {
-    const val = parseNum(mtdResult.data.kpiMap[meta.indicador]?.value);
+    const val = parseNum(targetResult.data.kpiMap[meta.indicador]?.value);
     if (val === null) continue;
     if (val >= meta.target) {
       onTargetCount++;
@@ -668,9 +664,9 @@ function buildWhatsappReport(mtdResult, bscWeekly, subPages) {
     msg += `\n✅ _Os demais *${onTargetCount} indicadores* estão dentro da meta (99%~100%)._\n`;
   }
 
-  // BLOCO 3: EVOLUÇÃO SEMANAL SIMPLIFICADA
+  // BLOCO 3: EVOLUÇÃO SEMANA A SEMANA (SEGUNDA A DOMINGO)
   msg += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `*3️⃣ 📈 EVOLUÇÃO SEMANA A SEMANA*\n`;
+  msg += `*3️⃣ 📈 EVOLUÇÃO SEMANA A SEMANA (SEGUNDA A DOMINGO)*\n`;
 
   for (let i = 0; i < bscWeekly.length; i++) {
     const curr = bscWeekly[i];
@@ -679,14 +675,14 @@ function buildWhatsappReport(mtdResult, bscWeekly, subPages) {
     const deltaStr = prevGen !== null && currGen !== null
       ? ` _(${currGen >= prevGen ? '🟢 ▲ +' : '🔴 ▼ '}${(currGen - prevGen).toFixed(1).replace('.', ',')} pts)_`
       : '';
-    const tagParcial = i === bscWeekly.length - 1 ? ' *(Semana Atual)*' : '';
-    msg += `• *${curr.week.shortLabel}:* *${fmtScore(currGen)} pts*${deltaStr}${tagParcial}\n`;
+    const tagFoco = i === bscWeekly.length - 1 ? ' *(Última Fechada)*' : '';
+    msg += `• *${curr.week.shortLabel}:* *${fmtScore(currGen)} pts*${deltaStr}${tagFoco}\n`;
   }
 
-  // Destaca o que subiu e o que caiu na última semana fechada (penúltima se a última for parcial de 2 dias)
-  if (bscWeekly.length >= 3) {
-    const closedCurr = bscWeekly[bscWeekly.length - 2];
-    const closedPrev = bscWeekly[bscWeekly.length - 3];
+  // Destaca o que subiu e o que caiu comparando a última semana fechada com a penúltima
+  if (bscWeekly.length >= 2) {
+    const closedCurr = bscWeekly[bscWeekly.length - 1];
+    const closedPrev = bscWeekly[bscWeekly.length - 2];
     const subiu = [];
     const caiu = [];
 
@@ -699,28 +695,35 @@ function buildWhatsappReport(mtdResult, bscWeekly, subPages) {
       else if (diff <= -0.2) caiu.push(`*${meta.indicador}* (${fmtPct(pV)} ➔ *${fmtPct(cV)}*)`);
     }
 
-    msg += `\n📌 *Destaques da última semana fechada (${closedCurr.week.shortLabel} vs ${closedPrev.week.shortLabel}):*\n`;
+    msg += `\n📌 *Destaques da semana fechada (${closedCurr.week.shortLabel} vs ${closedPrev.week.shortLabel}):*\n`;
     if (subiu.length > 0) msg += `🟢 *Subiram:* ${subiu.join(' | ')}\n`;
     if (caiu.length > 0) msg += `🔴 *Caíram:* ${caiu.join(' | ')}\n`;
   }
 
   // BLOCO 4: RAIO-X DAS 3 SUBPÁGINAS
-  msg += formatCleanSubPages(subPages);
+  msg += formatCleanSubPages(subPages, weekShort);
 
   return msg;
 }
 
 async function main() {
   console.log('====================================================');
-  console.log('🚀 EXECUTANDO AGENTE DE FECHAMENTO SEMANAL (4 PÁGINAS)');
+  console.log('🚀 EXECUTANDO AGENTE DE FECHAMENTO SEMANAL (SEGUNDA A DOMINGO)');
   console.log('====================================================\n');
 
-  const { monthToDate, weeks } = getPeriodsToAnalyze(new Date());
-  const cachedPath = path.join(DATA_DIR, 'ultimos_dados_extraidos.json');
+  const { targetClosedWeek, weeks } = getPeriodsToAnalyze(new Date());
+  const cachedWeeklyPath = path.join(DATA_DIR, 'ultimos_dados_extraidos.json');
+  const cachedSubpagesPath = path.join(DATA_DIR, 'subpages_semana_fechada.json');
 
-  if (process.argv.includes('--cached') && fs.existsSync(cachedPath)) {
-    const cached = JSON.parse(fs.readFileSync(cachedPath, 'utf-8'));
-    const whatsappReport = buildWhatsappReport({ period: monthToDate, data: cached.monthToDate }, cached.bscWeekly, cached.subPages);
+  if (process.argv.includes('--cached') && fs.existsSync(cachedWeeklyPath)) {
+    const cached = JSON.parse(fs.readFileSync(cachedWeeklyPath, 'utf-8'));
+    // Encontra a semana fechada alvo (02/11 a 08/11)
+    const targetWeekData = cached.bscWeekly.find(w => w.week.shortLabel === targetClosedWeek.shortLabel) || cached.bscWeekly[cached.bscWeekly.length - 2] || cached.bscWeekly[cached.bscWeekly.length - 1];
+    // Mantém as semanas fechadas de segunda a domingo (ignora parcial se houver)
+    const cleanWeekly = cached.bscWeekly.filter(w => !w.week.label.includes('11/11'));
+    const subPages = fs.existsSync(cachedSubpagesPath) ? JSON.parse(fs.readFileSync(cachedSubpagesPath, 'utf-8')) : cached.subPages;
+
+    const whatsappReport = buildWhatsappReport(targetWeekData, cleanWeekly, subPages);
     const msgPath = path.join(REPORTS_DIR, 'mensagem_whatsapp_slack.txt');
     fs.writeFileSync(msgPath, whatsappReport, 'utf-8');
     console.log(whatsappReport);
@@ -732,16 +735,9 @@ async function main() {
   const page = context.pages()[0] || await context.newPage();
   await page.setViewportSize({ width: 1920, height: 1200 });
 
-  // Garante que está logado na conta Google (usando sessão ou GOOGLE_EMAIL + GOOGLE_PASSWORD)
   await ensureGoogleAuthenticated(page, context);
 
-  // 1. Extrai o resumo de 01/11 a 10/11 na página Principal (p_o4l5vj4n3d)
-  console.log(`📅 [Principal] Filtrando -> ${monthToDate.label}...`);
-  await selectDateRange(page, monthToDate.start, monthToDate.end);
-  const mtdData = await extractBscPage(page);
-  console.log(`   Período lido: "${mtdData.selectedPeriodText}" | Nota Geral: ${mtdData.generalScore}`);
-
-  // 2. Extrai cada semana para o comparativo semanal na página Principal
+  // 1. Extrai as 4 semanas fechadas (todas de segunda a domingo)
   const bscWeekly = [];
   for (const w of weeks) {
     console.log(`📅 [Principal] Filtrando -> ${w.label}...`);
@@ -751,24 +747,27 @@ async function main() {
     bscWeekly.push({ week: w, data });
   }
 
-  // 3. Extrai as 3 páginas adicionais solicitadas (ETA Origem, ETA Destino e Telemetria) no período acumulado
-  const etaOrigem = await extractSubPageDetails(page, PAGES.etaOrigem, 'ETA Origem', monthToDate.start, monthToDate.end);
-  const etaDestino = await extractSubPageDetails(page, PAGES.etaDestino, 'ETA Destino', monthToDate.start, monthToDate.end);
-  const telemetria = await extractSubPageDetails(page, PAGES.telemetria, 'Telemetria', monthToDate.start, monthToDate.end);
+  const targetWeekData = bscWeekly[bscWeekly.length - 1];
+
+  // 2. Extrai as 3 páginas adicionais na última semana fechada (segunda a domingo)
+  console.log(`🔎 Extraindo subpáginas para a semana fechada ${targetClosedWeek.label}...`);
+  const etaOrigem = await extractSubPageDetails(page, PAGES.etaOrigem, 'ETA Origem', targetClosedWeek.start, targetClosedWeek.end);
+  const etaDestino = await extractSubPageDetails(page, PAGES.etaDestino, 'ETA Destino', targetClosedWeek.start, targetClosedWeek.end);
+  const telemetria = await extractSubPageDetails(page, PAGES.telemetria, 'Telemetria', targetClosedWeek.start, targetClosedWeek.end);
 
   await context.close();
 
   const subPages = { etaOrigem, etaDestino, telemetria };
-  const whatsappReport = buildWhatsappReport({ period: monthToDate, data: mtdData }, bscWeekly, subPages);
+  const whatsappReport = buildWhatsappReport(targetWeekData, bscWeekly, subPages);
   const msgPath = path.join(REPORTS_DIR, 'mensagem_whatsapp_slack.txt');
   fs.writeFileSync(msgPath, whatsappReport, 'utf-8');
-  fs.writeFileSync(path.join(DATA_DIR, 'ultimos_dados_extraidos.json'), JSON.stringify({ monthToDate: mtdData, bscWeekly, subPages }, null, 2), 'utf-8');
+  fs.writeFileSync(cachedWeeklyPath, JSON.stringify({ targetClosedWeek: targetWeekData, bscWeekly, subPages }, null, 2), 'utf-8');
+  fs.writeFileSync(cachedSubpagesPath, JSON.stringify(subPages, null, 2), 'utf-8');
 
   console.log('\n====================================================');
-  console.log('✅ MENSAGEM PRONTA PARA WHATSAPP / SLACK:');
+  console.log('✅ MENSAGEM SEMANAL PRONTA (SEGUNDA A DOMINGO):');
   console.log('====================================================\n');
   console.log(whatsappReport);
-  console.log(`\n📁 Arquivo salvo em: ${msgPath}`);
 
   await sendZApiMessage(whatsappReport);
 }
