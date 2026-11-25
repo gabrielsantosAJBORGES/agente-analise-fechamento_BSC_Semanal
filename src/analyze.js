@@ -498,7 +498,7 @@ function zonaLabel(score) {
   return '🔴 Zona Crítica';
 }
 
-function formatCleanSubPages(subPages, weekLabel = 'SEMANA FECHADA') {
+function formatCleanSubPages(subPages, weekLabel = 'SEMANA FECHADA', kpiMap = {}) {
   let out = `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
   out += `*4️⃣ 🔍 RAIO-X OPERACIONAL (${weekLabel.toUpperCase()})*\n`;
 
@@ -555,13 +555,15 @@ function formatCleanSubPages(subPages, weekLabel = 'SEMANA FECHADA') {
   // 3. TELEMETRIA
   const tel = subPages.telemetria;
   if (tel) {
-    const vals = tel.cards.map(c => c.value);
-    const kpiGeral = vals.find(v => v === '94,65%') || tel.cards[0]?.value || '-';
-    const espAntes = vals.find(v => v === '97,11%') || tel.cards[1]?.value || '-';
-    const tempoEsp = tel.cards[2]?.value || '-';
+    const vals = (tel.cards || []).map(c => c.value).filter(v => /^\d+[,.]\d+%$/.test(v));
+    const kpiGeral = kpiMap['Telemetria']?.value || vals[0] || '-';
+    const espAntes = vals[1] || vals[0] || '-';
+    const tempoEsp = vals[2] || '-';
 
     out += `\n📡 *TELEMETRIA — Nota: ${kpiGeral}*\n`;
-    out += `   • *Antes do ETA:* ${espAntes} | *Tempo Espelhado:* ${tempoEsp}\n`;
+    if (espAntes !== '-' || tempoEsp !== '-') {
+      out += `   • *Antes do ETA:* ${espAntes} | *Tempo Espelhado:* ${tempoEsp}\n`;
+    }
 
     const perfilChart = tel.charts.find(c => c.includes('TRUCK') && c.includes('CARRETA'));
     if (perfilChart) {
@@ -701,7 +703,7 @@ export function buildWhatsappReport(targetResult, bscWeekly, subPages) {
   }
 
   // BLOCO 4: RAIO-X DAS 3 SUBPÁGINAS
-  msg += formatCleanSubPages(subPages, weekShort);
+  msg += formatCleanSubPages(subPages, weekShort, targetResult.data.kpiMap);
 
   return msg;
 }
