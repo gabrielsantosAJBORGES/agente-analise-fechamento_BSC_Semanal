@@ -34,9 +34,9 @@ function diffStr(curr, prev, unit = 'pts') {
 export function buildMonthlyReport(mRetrasado, mAnterior, mAtual) {
   const nowStr = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
-  const scoreRet = parseNum(mRetrasado.data.generalScore);
-  const scoreAnt = parseNum(mAnterior.data.generalScore);
-  const scoreAtu = mAtual ? parseNum(mAtual.data.generalScore) : null;
+  const scoreRet = parseNum(mRetrasado?.data?.generalScore);
+  const scoreAnt = parseNum(mAnterior?.data?.generalScore);
+  const scoreAtu = mAtual?.data ? parseNum(mAtual.data.generalScore) : null;
 
   let msg = `*📊 FECHAMENTO MENSAL CONSOLIDADO (01 A 30/31) — BSC 3PL AJ BORGES*\n`;
   msg += `🗓️ *Meses Fechados:* ${mRetrasado.name} (${mRetrasado.label}) vs ${mAnterior.name} (${mAnterior.label})\n`;
@@ -47,7 +47,7 @@ export function buildMonthlyReport(mRetrasado, mAnterior, mAtual) {
   msg += `*1️⃣ 🏆 PONTUAÇÃO DOS MESES FECHADOS (01 A 30/31)*\n`;
   msg += `• *${mRetrasado.name} (${mRetrasado.label}):* *${fmtScore(scoreRet)} pts*\n`;
   msg += `• *${mAnterior.name} (${mAnterior.label}):* *${fmtScore(scoreAnt)} pts*${diffStr(scoreAnt, scoreRet)}\n`;
-  if (mAtual) {
+  if (mAtual && scoreAtu !== null) {
     msg += `• *${mAtual.name} (${mAtual.label} MTD):* *${fmtScore(scoreAtu)} pts*${diffStr(scoreAtu, scoreAnt)}\n`;
   }
 
@@ -63,13 +63,13 @@ export function buildMonthlyReport(mRetrasado, mAnterior, mAtual) {
   ];
 
   for (const p of pillars) {
-    const vRet = parseNum(mRetrasado.data.pillarScores[p.key]);
-    const vAnt = parseNum(mAnterior.data.pillarScores[p.key]);
-    const vAtu = mAtual ? parseNum(mAtual.data.pillarScores[p.key]) : null;
+    const vRet = parseNum(mRetrasado?.data?.pillarScores?.[p.key]);
+    const vAnt = parseNum(mAnterior?.data?.pillarScores?.[p.key]);
+    const vAtu = mAtual?.data?.pillarScores ? parseNum(mAtual.data.pillarScores[p.key]) : null;
 
     msg += `\n${p.icon} *${p.name}:*\n`;
     msg += `   • ${mRetrasado.name}: *${fmtScore(vRet)}* ➔ ${mAnterior.name}: *${fmtScore(vAnt)}*${diffStr(vAnt, vRet)}\n`;
-    if (mAtual) {
+    if (mAtual && vAtu !== null) {
       msg += `   • ${mAtual.name} (Atual): *${fmtScore(vAtu)}*${diffStr(vAtu, vAnt)}\n`;
     }
   }
@@ -80,12 +80,12 @@ export function buildMonthlyReport(mRetrasado, mAnterior, mAtual) {
 
   const kpisToCheck = ['ETA Destino', 'Telemetria', 'ETA Origem', 'Tendência', 'SPOT', 'Training'];
   for (const kpi of kpisToCheck) {
-    const kRet = parseNum(mRetrasado.data.kpiMap[kpi]?.value);
-    const kAnt = parseNum(mAnterior.data.kpiMap[kpi]?.value);
-    const kAtu = mAtual ? parseNum(mAtual.data.kpiMap[kpi]?.value) : null;
+    const kRet = parseNum(mRetrasado?.data?.kpiMap?.[kpi]?.value);
+    const kAnt = parseNum(mAnterior?.data?.kpiMap?.[kpi]?.value);
+    const kAtu = mAtual?.data?.kpiMap ? parseNum(mAtual.data.kpiMap[kpi]?.value) : null;
 
     let kpiLine = `• *${kpi}:* ${mRetrasado.name}: ${fmtPct(kRet)} ➔ ${mAnterior.name}: *${fmtPct(kAnt)}*${diffStr(kAnt, kRet, 'p.p.')}`;
-    if (mAtual) {
+    if (mAtual && kAtu !== null) {
       kpiLine += ` ➔ ${mAtual.name}: *${fmtPct(kAtu)}*`;
     }
     msg += `${kpiLine}\n`;
@@ -168,11 +168,12 @@ export async function runMonthlyAnalysis() {
     data: historyData.outScore
   };
 
-  const mAtual = {
+  const currentData = recentData?.monthToDate || recentData?.targetClosedWeek?.data || null;
+  const mAtual = currentData ? {
     name: 'Novembro',
     label: '01/11 a 11/11',
-    data: recentData.monthToDate
-  };
+    data: currentData
+  } : null;
 
   const reportText = buildMonthlyReport(mRetrasado, mAnterior, mAtual);
 
