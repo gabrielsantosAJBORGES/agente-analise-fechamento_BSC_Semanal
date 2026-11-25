@@ -53,23 +53,27 @@ export async function ensureGoogleAuthenticated(page, context) {
   const password = process.env.GOOGLE_PASSWORD;
 
   await page.goto(PAGES.principal, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => {
-    const txt = document.body?.innerText || '';
-    return /\d+[,.]\d+%/.test(txt);
-  }, { timeout: 25000 }).catch(() => {});
 
-  // Verifica se caiu em tela de login ou se está deslogado (sem percentuais carregados nos cards)
-  const needsLogin = await page.evaluate(() => {
-    const url = window.location.href;
-    if (url.includes('accounts.google.com')) return true;
-    const txt = document.body.innerText || '';
-    const hasNumbers = /\d+[,.]\d+%/.test(txt);
-    return !hasNumbers;
-  }).catch(() => true);
+  const currentUrl = page.url();
+  if (currentUrl.includes('datastudio.google.com') || currentUrl.includes('lookerstudio.google.com')) {
+    console.log('⏳ Aguardando componentes do Looker Studio carregarem...');
+    await page.waitForFunction(() => {
+      const txt = document.body?.innerText || '';
+      return /\d+[,.]\d+%/.test(txt) || txt.includes('AJ BORGES') || txt.includes('Fazer login') || txt.includes('Sign in');
+    }, { timeout: 35000 }).catch(() => {});
 
-  if (!needsLogin) {
-    console.log('✅ Sessão Google já está ativa e autenticada com acesso aos dados!');
-    return true;
+    const pageState = await page.evaluate(() => {
+      const txt = document.body?.innerText || '';
+      const hasLoginPrompt = txt.includes('Fazer login') || txt.includes('Sign in') || document.querySelector('a[href*="ServiceLogin"]') !== null;
+      const hasNumbers = /\d+[,.]\d+%/.test(txt);
+      const isBsc = txt.includes('AJ BORGES') || txt.includes('BSC') || document.querySelector('.canvas-date-input, .ng2-date-picker-button') !== null;
+      return { hasLoginPrompt, hasNumbers, isBsc };
+    }).catch(() => ({ hasLoginPrompt: true, hasNumbers: false, isBsc: false }));
+
+    if (!pageState.hasLoginPrompt && (pageState.hasNumbers || pageState.isBsc)) {
+      console.log('✅ Sessão Google já está ativa e autenticada com acesso aos dados!');
+      return true;
+    }
   }
 
   if (!password || password === 'SUA_SENHA_DO_GOOGLE_AQUI') {
@@ -112,6 +116,13 @@ export async function ensureGoogleAuthenticated(page, context) {
     } else {
       await page.keyboard.press('Enter');
     }
+  }
+
+  const avBtn = page.locator('button:has-text("Avançar"), #identifierNext button, button:has-text("Next")').first();
+  if (await avBtn.isVisible().catch(() => false)) {
+    console.log('Clicando em Avançar no identificador...');
+    await avBtn.click();
+    await page.waitForTimeout(2000);
   }
 
   const passInput = page.locator('input[name="Passwd"], input[type="password"]:not([aria-hidden="true"])').first();
